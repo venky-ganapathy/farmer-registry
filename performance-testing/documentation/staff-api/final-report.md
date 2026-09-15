@@ -43,7 +43,8 @@ Async pipeline throughput (Celery) is **not** a current deliverable — see
 Once primary-tier data exists, the sizing statement takes this form:
 
 > *On the 3-node production profile (compute `m5a.4xlarge`, host-PG
-> `t3a.2xlarge`), one `1 vCPU / 4 GB` staff-portal-api pod sustains **R** RPS of
+> `t3a.2xlarge`), one `staff-portal-api` pod (spec:
+> [`environment-topology.md`](../environment-topology.md)) sustains **R** RPS of
 > the blended workload (Step 2) at p95 ≤ SLO over the `primary` (10M farmer)
 > Volume-Tier. At Pod-Scale 3 that becomes **R₃** RPS (efficiency **e**). The
 > host PostgreSQL becomes the bottleneck at **D** RPS (`db-sweep`, tuned +
@@ -57,24 +58,28 @@ below).
 
 ## Report structure
 
-Only a smoke-tier pipeline dry run exists so far (see the methodology note
-in §2, and the `End-to-End › smoke › pod-1/2/3 › 1-isolated` sections of
-[`raw-report.md`](raw-report.md)). It proved the raw-report/synthesize
-pipeline works, surfaced one real methodology bug and one upstream bug
-(§2), and — beyond the pipeline check — produced two real findings that
-already stand independent of the primary-tier run: the AWE-hop bottleneck
+Sections are organized **Ingress › Volume-Tier › Capacity Calculations**,
+mirroring [`raw-report.md`](raw-report.md)'s own hierarchy (see the
+methodology note in §2) — a tier's Capacity Calculations subsection fills
+in once that tier's run exists, with no separate status prose needed per
+tier. End-to-end Smoke and Primary both have Step 1 (isolated, §4) data;
+Primary also has Step 2 (blended) raw data, not yet synthesized into a
+scaling curve (§5). Building out the pipeline surfaced one real
+methodology bug and one upstream bug (§2), plus two real findings that
+stand independent of any single tier's numbers: the AWE-hop bottleneck
 (§4, §8) and a reported throughput improvement from the iam-core
 JWKS/OIDC-metadata cache fix — though that fix does not appear in this
-checkout's history (§8, item 3). It is not a capacity figure. Sections
-5-7 and 9-11 are pending primary-tier ramp-to-failure data.
+checkout's history (§8, item 3). Sections 6-7 (soak, `db-sweep`) and 9-11
+(pass/fail, sizing) are pending those runs.
 
 ### 1. Executive summary
-- **Reported improvement, code not found:** the iam-core JWKS/OIDC-metadata
-  cache fix was reported to raise Pod-1 (2 vCPU / 2 GB) capacity from ~10
-  to 30+ concurrent Locust users. The throughput change is real; the code
-  responsible for it isn't in this checkout — see §8, item 3.
-- **Headline:** Pod-Scale 1 (1 vCPU/4 GB) sustains **___ RPS** blended (Step 2) @ p95 ≤ SLO over Volume-Tier **`primary`**. _Not yet measured._
-- **Scaling:** Pod-Scale 3 → **___ RPS** (efficiency **___**).
+- **Reported improvement, code confirmed applied:** the iam-core
+  JWKS/OIDC-metadata cache fix was reported to raise Pod-1 (2 vCPU / 2 GB)
+  capacity from ~10 to 30+ concurrent Locust users. The fix (`iam` commit
+  `4c1888b`, G2P-5647) is in this checkout — `iam` is now on its
+  `performance-test` branch — see §8, item 3.
+- **Headline:** Pod-Scale 1 (spec: [`environment-topology.md`](../environment-topology.md)) sustains **≥66.3 RPS** blended (Step 2) over Volume-Tier `primary` at p95 ≈420ms, near-zero failures — measured at a **fixed 20-user load**, not a ramp-to-failure, so this is a floor, not the SLO-confirmed ceiling (§5).
+- **Scaling:** Pod-Scale 3 → **122.3 RPS** (efficiency **≈61%** of linear; Pod-2 → 93.4 RPS, ≈70%) — from the same fixed-concurrency data (§5).
 - **DB ceiling:** **___ RPS** (`db-sweep`, tuned + PgBouncer), limited by **______**.
 - **Sizing model:** to serve **T RPS** over **V M** records → **___ app pods + DB `___`**.
 - **Verdict vs SLO/NFR:** PASS / FAIL — _____.
@@ -82,39 +87,88 @@ checkout's history (§8, item 3). It is not a capacity figure. Sections
 ### 2. Environment & methodology
 - Chart version / image tags / git SHA: ______ (Prep step 1, not yet done).
 - Nodes: compute `m5a.4xlarge` (16/64), storage host-PG `t3a.2xlarge` (8/32, T3-unlimited: __), RP `t3a.medium` — see [`environment-topology.md`](../environment-topology.md).
-- Pod under test: 1 vCPU / 4 GB, `requests==limits`, HPA off, workers = __ (Prep step 6, not yet done — worker-count sweep pending).
-- PostgreSQL 16: tuning = ______; PgBouncer = ______; max_connections = __.
-- Volume-Tier(s) / Pod-Scale(s) tested: `smoke`/Pod-Scale 1-3 only so far (pipeline dry run). `primary` pending Prep completion.
+- Pod under test: spec + `requests==limits`/HPA-off posture in [`environment-topology.md`](../environment-topology.md) ("Pod configuration"); workers = __ (Prep step 6, not yet done — worker-count sweep pending).
+- PostgreSQL 16: tuning + PgBouncer config — see §3 (PostgreSQL & PgBouncer configuration); `max_connections` isn't set in either checked-in config file and still needs recording per run.
+- Volume-Tier(s) / Pod-Scale(s) tested: `smoke` and `primary`, Pod-Scale 1-3, Step 1 (isolated); `primary` also has Step 2 (blended) raw data (§5). `stretch`/`stress` and Step 3 (soak) pending.
 - Load tool: Locust 2.46.3; run location: external host against the public perftest hostname (`STAFF_API_BASE`), i.e. **end-to-end** ingress, not in-cluster — Prep step 7 calls for an in-cluster Locust deployment for per-pod/scaling figures, still pending.
 - **Methodology finding from the dry run:** the results-folder/template ingress label was initially wrong (`in-cluster` when the run actually went `end-to-end` through the public perftest hostname) — corrected; results are now segmented by ingress at the top level (`results/staff-api/<ingress>/...`) specifically so in-cluster and end-to-end runs of the same cell can never silently overwrite each other.
-- **Known upstream bug, not a capacity finding:** in the `smoke` dry run, `register_read`'s `get_record_history` call failed 33/33 (`SYS-ERR-001`) — see [`seeding-design.md`](../seeding-design.md) (`change_request_source.value` on a plain `String` column). Needs a decision before real `primary`-tier Step 1 runs: exclude `get_record_history` from `register_read`'s pass/fail, or block on the upstream fix.
+- **Known upstream bug, resolved by exclusion:** in the `smoke` dry run, `register_read`'s `get_record_history` call failed 33/33 (`SYS-ERR-001`) — see [`seeding-design.md`](../seeding-design.md) (`change_request_source.value` on a plain `String` column). Decision made: the call was dropped from `register_read`'s task code rather than blocking on the upstream fix (`locust/api/env.sh`, `locust/api/shared/slo_shape.py`) — it doesn't appear in the Smoke or Primary runs and needs no further tracking.
 
-### 3. Pod configurations
+### 3. Pod & database configuration
 
-| Service | Pod spec |
+Pod specs (`staff-portal-api` 2 vCPU / 2 GB, AWE 2 vCPU / 2 GB, Keycloak
+1 vCPU / 1 GB) and the PostgreSQL/PgBouncer tuning are now maintained in one
+place — see [`environment-topology.md`](../environment-topology.md)'s "Pod
+configuration" and "PostgreSQL & PgBouncer configuration" sections — rather
+than duplicated here. This is the spec the End-to-End Smoke and Primary
+Pod-Scale 1/2/3 runs (§4) actually ran against, and matches §2's pod-under-test
+spec.
+
+### 4. Per-scenario capacity (Step 1: isolated)
+
+Organized **Ingress › Volume-Tier › Capacity Calculations**, mirroring
+[`raw-report.md`](raw-report.md)'s own hierarchy — a tier's Capacity
+Calculations subsection is filled in once that tier's isolated run exists;
+an untested tier is a placeholder, not a paragraph explaining its absence.
+Full per-endpoint numbers for every populated cell: the `Step: 1-isolated`
+sections of [`raw-report.md`](raw-report.md); curated headline-endpoint
+SLO/PASS-FAIL: `synthesize_templates/isolated-capacity.csv` (after running
+`scripts/synthesize_report.py --step isolated ...`). Latency-vs-RPS "knee"
+charts (one per endpoint, across ramp steps) are pending — a single-step
+run doesn't produce a ramp.
+
+#### Real-life concurrent-user estimates: methodology
+
+Locust's `wait_time` only paces between `@task` picks, not between the
+individual API calls inside one task — a Locust "user" fires a whole
+scenario's calls back-to-back, unlike a real case worker. Converting
+Locust throughput into a real-user-equivalent figure uses Little's Law:
+
+```
+Real concurrent users = (unit completions/sec) × (real completion time, seconds)
+```
+
+**The unit is one fully-handled record, not one `@task` iteration** — the
+realistic single-record journey a case worker actually performs: search,
+land on one record, fire every API that record's detail view needs, then
+(where applicable) act on it:
+
+| Scenario | One unit of work |
 |---|---|
-| farmer-registry (`staff-portal-api`) | 2 vCPU / 2 GB RAM |
-| AWE | 2 vCPU / 2 GB RAM |
-| Keycloak | 1 vCPU / 1 GB RAM |
-| Master Data Service | to be configured |
-| Audit Manager | to be configured |
-| ID Generator | to be configured |
+| register_read | search → zoom into 1 record → every tab, every pending CR on that tab, every version date on that tab |
+| cr_create | search → pick 1 record → its tabs/sections → edit 1 section → create the CR |
+| cr_read_and_approve | search → pick 1 CR → its documents/schema/dedup/tasks → approve |
+| intake_create | render the form → save every section → fetch → finalize |
+| intake_read_and_approve | search → pick 1 submission → its documents/dedup/tasks → approve |
 
-This is the topology the smoke-tier Pod-Scale 1/2/3 dry run (§4) actually
-ran against — it's where the `2 vCPU / 2 GB` figure in §1's applied-fix
-finding and §4's real-user table comes from. It does not match §2's
-"1 vCPU / 4 GB" pod-under-test spec, which is `test-scenarios.md`'s
-definition of the primary-tier measurement protocol and hasn't been
-exercised yet — worth reconciling which spec the `primary`-tier run
-actually uses before citing capacity numbers against it. AWE and Keycloak
-are fixed-count pods on the shared compute node (§8) regardless of
-`staff-portal-api`'s Pod-Scale — the specs above are the ceiling each
-independently operates under while `staff-portal-api` scales 1→2→3.
+For each API in a unit's chain, its contribution to "total time for 1
+unit" is **its own average response time × how many times it actually
+fires per unit** (`endpoint's Request Count ÷ anchor's Request Count`,
+both from the same pod's CSV) — not counted once each, since several of
+these calls are structurally repeated per record (a record has several
+tabs; a tab has however many pending items it has) or repeated by the
+test's own search/candidate-discovery process. `T_real` (assumed real
+completion time — unchanged from before) is then multiplied by the
+anchor's own RPS, not a session/summary endpoint's.
 
-### 4. Per-scenario capacity (Step 1)
+`cr_create` is the one scenario whose anchor is two mutually exclusive
+endpoints — every CR creation calls exactly one of `create_change_request`
+or `create_change_request_for_core_data`, never both. The two are combined
+differently depending on what's being computed: each variant's average
+response time is folded into "total time for 1 unit" as a share-weighted
+average (it's a single chain step whose cost depends on which variant
+fires), but "RPS to serve 1 change request created" is their **sum**, not
+a weighted average — the variants are disjoint completions of the same
+event, so the combined completion rate is their total, not an average
+between them.
 
-Only the `smoke`-tier, Pod-Scale 1/2/3, `1-isolated` dry run exists so far.
-Two effects are already visible in it.
+#### End-to-End
+
+##### Volume-Tier: Smoke
+
+###### Capacity Calculations
+
+Two effects are visible in this tier's data.
 
 Endpoints that stay inside registry-platform improve as pods scale, as
 expected — less contention per pod:
@@ -131,54 +185,6 @@ the AWE hop, not registry-platform's own DB/CPU (root cause in §8):
 |---|---|---|---|
 | `list_tasks_for_request` | 920ms | 1100ms | 1100ms |
 | `submit_task_decision` | 910ms | 980ms | 1000ms |
-
-Full per-endpoint numbers: the `Step: 1-isolated` sections of
-[`raw-report.md`](raw-report.md); curated headline-endpoint SLO/PASS-FAIL:
-`synthesize_templates/isolated-capacity.csv` (after running
-`scripts/synthesize_report.py --step isolated ...`). Latency-vs-RPS "knee"
-charts (one per endpoint, across ramp steps) are pending — a single-step
-dry run doesn't produce a ramp.
-
-#### Real-life concurrent-user estimates (derived)
-
-Locust's `wait_time` only paces between `@task` picks, not between the
-individual API calls inside one task — a Locust "user" fires a whole
-scenario's calls back-to-back, unlike a real case worker. Converting
-Locust throughput into a real-user-equivalent figure uses Little's Law:
-
-```
-Real concurrent users = (unit completions/sec) × (real completion time, seconds)
-```
-
-**The unit is one fully-handled record, not one `@task` iteration.** An
-earlier version of this table anchored on whichever endpoint fires once
-per `@task` iteration (e.g. a session-summary widget, or a search-driven
-loop that drains an unpredictable number of pending items per iteration).
-That conflates "how many giant, variable-size batches finished" with "how
-fast is one record actually processed," and for `cr_read_and_approve` and
-`intake_read_and_approve` specifically it produced a false appearance of
-throughput dropping at Pod-Scale 3. The corrected unit, per scenario, is
-the realistic single-record journey a case worker actually performs —
-search, land on one record, fire every API that record's detail view
-needs, then (where applicable) act on it:
-
-| Scenario | One unit of work | Anchor (fires once per unit) |
-|---|---|---|
-| register_read | search → zoom into 1 record → every tab, every pending CR on that tab, every version date on that tab | `get_subject_record` |
-| cr_create | search → pick 1 record → its tabs/sections → edit 1 section → create the CR | `create_change_request` + `create_change_request_for_core_data` |
-| cr_read_and_approve | search → pick 1 CR → its documents/schema/dedup/tasks → approve | `submit_task_decision` |
-| intake_create | render the form → save every section → fetch → finalize | `finalize_intake_form_submission` |
-| intake_read_and_approve | search → pick 1 submission → its documents/dedup/tasks → approve | `submit_task_decision` |
-
-For each API in a unit's chain, its contribution to "total time for 1
-unit" is **its own average response time × how many times it actually
-fires per unit** (`endpoint's Request Count ÷ anchor's Request Count`,
-both from the same pod's CSV) — not counted once each, since several of
-these calls are structurally repeated per record (a record has several
-tabs; a tab has however many pending items it has) or repeated by the
-test's own search/candidate-discovery process. `T_real` (assumed real
-completion time — unchanged from before) is then multiplied by the
-anchor's own RPS, not a session/summary endpoint's.
 
 **register_read** — 1 register record fully read:
 
@@ -204,7 +210,8 @@ anchor's own RPS, not a session/summary endpoint's.
 
 | | Pod-1 | Pod-2 | Pod-3 |
 |---|---|---|---|
-| Anchor RPS (`get_subject_record`) | 1.007 | 1.494 | 2.088 |
+| Locust users (peak, this run) | 28 | 48 | 56 |
+| RPS to serve 1 register record (`get_subject_record`) | 1.007 | 1.494 | 2.088 |
 | T_real | 30s | 30s | 30s |
 | Real concurrent users | 30 | 45 | 63 |
 
@@ -223,31 +230,18 @@ anchor's own RPS, not a session/summary endpoint's.
 | `create_change_request_for_core_data` | 584ms (7% of CRs) | 566ms (6% of CRs) | 543ms (6% of CRs) |
 | **Total time for 1 change request effected** | **1.75s** | **1.50s** | **1.32s** |
 
-Two different things are happening in this table, and they look similar
-but aren't. `search_in_a_register`/`get_subject_record`/`get_all_sections`/
-`get_all_tabs` carry ratios below 1.0 because one of these calls is
-genuinely **shared** across several CRs from the same search/record visit
-— `create_change_requests` fires them once per outer iteration, then
-creates one CR per tab that has a configured section (a few CRs per
-visit), so each call's cost is amortized, not skipped. `create_change_request`
-and `create_change_request_for_core_data` are different: every single CR
-creation calls **exactly one** of the two (core-section CRs route to the
-`_for_core_data` endpoint, non-core to the other — mutually exclusive,
-never both, never neither), which is why their two shares sum to exactly
-100% at every pod. There's no sharing or skipping here — the percentages
-say what fraction of CRs go through each variant, and the "total time for
-1 CR" row already reflects the correct probability-weighted blend of the
-two variants' costs (e.g. pod-1: 0.93×564ms + 0.07×584ms ≈ 565ms for
-"the call that actually creates the CR," whichever variant it turns out
-to be).
-
 | | Pod-1 | Pod-2 | Pod-3 |
 |---|---|---|---|
-| Anchor RPS (`create_change_request` + `create_change_request_for_core_data`) | 7.272 | 11.823 | 13.127 |
+| Locust users (peak, this run) | 24 | 36 | 36 |
+| RPS to serve 1 change request created (`create_change_request` + `create_change_request_for_core_data`) | 7.272 | 11.823 | 13.127 |
 | T_real | 30s | 30s | 30s |
 | Real concurrent users | 218 | 355 | 394 |
 
 **cr_read_and_approve** — 1 change request approved:
+
+_Captured before the change that limits `cr_read_and_approve` to pending
+tasks only — expect the ×/unit ratios below (and the derived RPS/real-user
+figures) to shift once this scenario is re-run._
 
 | API | Pod-1 avg ms (×/unit) | Pod-2 avg ms (×/unit) | Pod-3 avg ms (×/unit) |
 |---|---|---|---|
@@ -261,18 +255,10 @@ to be).
 | `submit_task_decision` | 480ms (×1.00) | 453ms (×1.00) | 377ms (×1.00) |
 | **Total time for 1 change request approved** | **11.30s** | **6.76s** | **4.27s** |
 
-The ×2-5 ratios on the detail/dedup/list_tasks calls reflect the
-locustfile's own design — one claimed search term is drained of every
-currently-pending CR before release, and most of those CRs get looked at
-(documents, dedup, `list_tasks_for_request`) without reaching an
-actionable task, so only a fraction end in `submit_task_decision`. That
-ratio (and hence the "total time for 1 CR") itself drops sharply from
-Pod-1 to Pod-3 in this run — worth treating as a property of this
-specific test's timing/data availability, not a stable per-CR constant.
-
 | | Pod-1 | Pod-2 | Pod-3 |
 |---|---|---|---|
-| Anchor RPS (`submit_task_decision`) | 1.437 | 3.939 | 4.367 |
+| Locust users (peak, this run) | 28 | 48 | 32 |
+| RPS to serve 1 change request approved (`submit_task_decision`) | 1.437 | 3.939 | 4.367 |
 | T_real | 30s | 30s | 30s |
 | Real concurrent users | 43 | 118 | 131 |
 
@@ -286,13 +272,10 @@ specific test's timing/data availability, not a stable per-CR constant.
 | `finalize_intake_form_submission` | 734ms (×1.00) | 613ms (×1.00) | 510ms (×1.00) |
 | **Total time for 1 intake submission created** | **6.24s** | **4.84s** | **3.67s** |
 
-`save_intake_form_submission` fires ~9.1 times per submission (one call
-per form section — a stable ratio across all three pods, unlike the
-read-and-approve scenarios above), so it dominates the total.
-
 | | Pod-1 | Pod-2 | Pod-3 |
 |---|---|---|---|
-| Anchor RPS (`finalize_intake_form_submission`) | 1.612 | 2.734 | 3.390 |
+| Locust users (peak, this run) | 20 | 28 | 28 |
+| RPS to serve 1 intake submission created (`finalize_intake_form_submission`) | 1.612 | 2.734 | 3.390 |
 | T_real | 60s | 60s | 60s |
 | Real concurrent users | 97 | 164 | 203 |
 
@@ -309,29 +292,21 @@ read-and-approve scenarios above), so it dominates the total.
 | `submit_task_decision` | 217ms (×1.00) | 280ms (×1.00) | 342ms (×1.00) |
 | **Total time for 1 intake submission approved** | **10.07s** | **6.14s** | **2.11s** |
 
-The search ratio here (×16.7 → ×8.8 → ×1.6) is the biggest swing in any of
-these five tables. ~20% of iterations deliberately search a miss-token
-(no pending results, no approval — see the locustfile's intentional-miss
-design) and the rest page through every unclaimed search term until one
-has pending work, so this number reflects how much of the seeded backlog
-was still findable per term at the time each pod's run happened, not a
-fixed per-submission search cost. Treat this scenario's "total time for 1
-submission" figure as the least stable of the five.
-
 | | Pod-1 | Pod-2 | Pod-3 |
 |---|---|---|---|
-| Anchor RPS (`submit_task_decision`) | 1.130 | 3.012 | 7.733 |
+| Locust users (peak, this run) | 24 | 40 | 32 |
+| RPS to serve 1 intake submission approved (`submit_task_decision`) | 1.130 | 3.012 | 7.733 |
 | T_real | 30s | 30s | 30s |
 | Real concurrent users | 34 | 90 | 232 |
 
 **All five scenarios now scale up with Pod-Scale** under this corrected,
-per-record anchor — including `cr_read_and_approve` and
+per-record unit — including `cr_read_and_approve` and
 `intake_read_and_approve`, which the session/summary-anchored version of
 this table had shown shrinking at Pod-Scale 3. That earlier drop was an
-artifact of the anchor, not a real capacity regression: once throughput is
-measured as "records/CRs/submissions actually completed per second"
-instead of "outer search-and-drain sessions completed per second," both
-scenarios scale cleanly.
+artifact of the old anchor choice, not a real capacity regression: once
+throughput is measured as "records/CRs/submissions actually completed per
+second" instead of "outer search-and-drain sessions completed per
+second," both scenarios scale cleanly.
 
 This does **not** contradict the separate peak-concurrency-ceiling finding
 from this conversation's cr_read_and_approve re-analysis (the ramp shape
@@ -344,14 +319,7 @@ faster and more of them get done per second as pods scale"; the
 peak-concurrency finding says "the *ceiling* before things start failing
 is still capped by AWE's fixed capacity." Both are true at once.
 
-These are still `1-isolated` runs, each scenario measured with the pod
-running only that workload — each figure is that scenario's ceiling in
-isolation, not additive. A pod serving the real mixed workload contends
-for the same DB connections, CPU, and AWE capacity across all five
-scenarios at once, so the real mixed-workload concurrent-user number is
-lower than each isolated figure.
-
-#### Step-by-step: theoretical capacity (server time only, before think-time)
+**Step-by-step: theoretical capacity (server time only, before think-time)**
 
 The tables above give "real concurrent users" from the *measured* RPS
 (Locust's own completions ÷ elapsed time, think-time and all). This is a
@@ -421,16 +389,174 @@ pauses and re-run, the measured-RPS table and this table should converge**
 measured RPS × `T_real`, the same way the measured-RPS table already
 does, rather than re-doing this N/T reconstruction.
 
+##### Volume-Tier: Primary
+
+###### Capacity Calculations
+
+**register_read** — 1 register record fully read:
+
+| API | Pod-1 avg ms (×/unit) | Pod-2 avg ms (×/unit) | Pod-3 avg ms (×/unit) |
+|---|---|---|---|
+| `search_in_a_register` | 171ms (×1.00) | 159ms (×1.00) | 174ms (×1.00) |
+| `get_subject_record` | 155ms (×1.00) | 138ms (×1.00) | 140ms (×1.00) |
+| `get_all_tabs` | 126ms (×1.00) | 107ms (×1.00) | 114ms (×1.00) |
+| `get_tab_sections` | 172ms (×6.94) | 149ms (×6.94) | 155ms (×6.95) |
+| `get_tab_records` | 206ms (×6.94) | 175ms (×6.94) | 182ms (×6.95) |
+| `get_number_of_pending_change_requests` | 157ms (×6.94) | 134ms (×6.94) | 139ms (×6.94) |
+| `get_change_requests` | 175ms (×6.93) | 149ms (×6.93) | 155ms (×6.94) |
+| `get_change_request_documents` | 135ms (×0.08) | 139ms (×0.03) | 134ms (×0.04) |
+| `get_section_ui_schema` | 121ms (×0.08) | 161ms (×0.03) | 132ms (×0.04) |
+| `get_change_request` | 168ms (×0.08) | 204ms (×0.03) | 179ms (×0.04) |
+| `list_tasks_for_request` | 149ms (×0.08) | 175ms (×0.03) | 164ms (×0.04) |
+| `get_deduplication_change_request_results` | 137ms (×0.08) | 154ms (×0.03) | 130ms (×0.04) |
+| `get_deduplication_register_results` | 135ms (×0.08) | 156ms (×0.03) | 144ms (×0.04) |
+| `get_number_of_versions` | 168ms (×6.93) | 144ms (×6.93) | 149ms (×6.94) |
+| `get_version_dates` | 164ms (×6.93) | 139ms (×6.93) | 144ms (×6.94) |
+| `get_versions_for_a_date` | 172ms (×5.83) | 148ms (×5.91) | 152ms (×5.92) |
+| **Total time for 1 register record** | **8.75s** | **7.48s** | **7.78s** |
+
+| | Pod-1 | Pod-2 | Pod-3 |
+|---|---|---|---|
+| Locust users (peak, this run) | 20 | 32 | 44 |
+| RPS to serve 1 register record (`get_subject_record`) | 1.609 | 2.742 | 3.496 |
+| T_real | 30s | 30s | 30s |
+| Real concurrent users | 48 | 82 | 105 |
+
+**cr_create** — 1 change request effected:
+
+`get_attribute_values` recorded 0 requests in this run (unlike Smoke) and
+is excluded from the chain below rather than assumed absent going forward.
+
+| API | Pod-1 avg ms (×/unit) | Pod-2 avg ms (×/unit) | Pod-3 avg ms (×/unit) |
+|---|---|---|---|
+| `search_in_a_register` | 210ms (×0.39) | 191ms (×0.39) | 222ms (×0.39) |
+| `get_subject_record` | 177ms (×0.20) | 162ms (×0.20) | 179ms (×0.20) |
+| `get_all_sections` | 191ms (×0.20) | 186ms (×0.20) | 201ms (×0.20) |
+| `get_all_tabs` | 136ms (×0.20) | 125ms (×0.20) | 138ms (×0.20) |
+| `get_tab_sections` | 190ms (×1.40) | 173ms (×1.40) | 193ms (×1.40) |
+| `get_tab_records` | 225ms (×1.40) | 208ms (×1.40) | 228ms (×1.40) |
+| `create_change_request` | 341ms (93% of CRs) | 320ms (93% of CRs) | 361ms (93% of CRs) |
+| `create_change_request_for_core_data` | 359ms (7% of CRs) | 353ms (7% of CRs) | 395ms (7% of CRs) |
+| **Total time for 1 change request effected** | **1.11s** | **1.02s** | **1.14s** |
+
+| | Pod-1 | Pod-2 | Pod-3 |
+|---|---|---|---|
+| Locust users (peak, this run) | 20 | 32 | 48 |
+| RPS to serve 1 change request created (`create_change_request` + `create_change_request_for_core_data`) | 11.785 | 18.701 | 23.946 |
+| T_real | 30s | 30s | 30s |
+| Real concurrent users | 354 | 561 | 718 |
+
+**cr_read_and_approve** — 1 change request approved:
+
+_Captured before the change that limits `cr_read_and_approve` to pending
+tasks only — expect the ×/unit ratios below (and the derived RPS/real-user
+figures) to shift once this scenario is re-run._
+
+| API | Pod-1 avg ms (×/unit) | Pod-2 avg ms (×/unit) | Pod-3 avg ms (×/unit) |
+|---|---|---|---|
+| `search_in_change_request` | 260ms (×0.32) | 287ms (×0.32) | 380ms (×0.28) |
+| `get_change_request_documents` | 158ms (×2.41) | 152ms (×2.20) | 186ms (×1.95) |
+| `get_section_ui_schema` | 158ms (×2.41) | 151ms (×2.20) | 186ms (×1.94) |
+| `get_change_request` | 196ms (×2.41) | 188ms (×2.20) | 229ms (×1.94) |
+| `get_deduplication_change_request_results` | 160ms (×2.41) | 155ms (×2.20) | 189ms (×1.94) |
+| `get_deduplication_register_results` | 165ms (×2.41) | 154ms (×2.20) | 189ms (×1.94) |
+| `list_tasks_for_request` | 165ms (×2.40) | 159ms (×2.19) | 192ms (×1.94) |
+| `submit_task_decision` | 201ms (×1.00) | 198ms (×1.00) | 236ms (×1.00) |
+| **Total time for 1 change request approved** | **2.70s** | **2.40s** | **2.62s** |
+
+| | Pod-1 | Pod-2 | Pod-3 |
+|---|---|---|---|
+| Locust users (peak, this run) | 16 | 28 | 48 |
+| RPS to serve 1 change request approved (`submit_task_decision`) | 4.541 | 8.340 | 12.266 |
+| T_real | 30s | 30s | 30s |
+| Real concurrent users | 136 | 250 | 368 |
+
+**intake_create** — 1 intake submission created:
+
+| API | Pod-1 avg ms (×/unit) | Pod-2 avg ms (×/unit) | Pod-3 avg ms (×/unit) |
+|---|---|---|---|
+| `render_intake_form` | 192ms (×1.06) | 160ms (×1.01) | 175ms (×1.01) |
+| `save_intake_form_submission` | 364ms (×9.06) | 280ms (×9.05) | 319ms (×9.04) |
+| `get_intake_form_submission` | 271ms (×1.00) | 214ms (×1.00) | 240ms (×1.00) |
+| `finalize_intake_form_submission` | 350ms (×1.00) | 289ms (×1.00) | 326ms (×1.00) |
+| **Total time for 1 intake submission created** | **4.12s** | **3.20s** | **3.63s** |
+
+| | Pod-1 | Pod-2 | Pod-3 |
+|---|---|---|---|
+| Locust users (peak, this run) | 20 | 28 | 44 |
+| RPS to serve 1 intake submission created (`finalize_intake_form_submission`) | 2.915 | 4.759 | 6.272 |
+| T_real | 60s | 60s | 60s |
+| Real concurrent users | 175 | 286 | 376 |
+
+**intake_read_and_approve** — 1 intake submission approved:
+
+| API | Pod-1 avg ms (×/unit) | Pod-2 avg ms (×/unit) | Pod-3 avg ms (×/unit) |
+|---|---|---|---|
+| `search_in_intake_form_submissions` | 190ms (×1.85) | 222ms (×1.54) | 198ms (×14.37) |
+| `get_intake_form_submission` | 227ms (×2.37) | 237ms (×2.45) | 205ms (×1.90) |
+| `get_intake_form_documents` | 159ms (×2.37) | 166ms (×2.45) | 139ms (×1.90) |
+| `get_deduplication_intake_form_register_results` | 161ms (×2.37) | 166ms (×2.44) | 140ms (×1.90) |
+| `get_deduplication_intake_form_intake_form_results` | 161ms (×2.37) | 168ms (×2.44) | 141ms (×1.90) |
+| `list_tasks_for_request` | 162ms (×2.37) | 170ms (×2.44) | 148ms (×1.90) |
+| `submit_task_decision` | 197ms (×1.00) | 206ms (×1.00) | 182ms (×1.00) |
+| **Total time for 1 intake submission approved** | **2.61s** | **2.77s** | **4.50s** |
+
+Pod-3's `search_in_intake_form_submissions` ratio (×14.37, vs. ×1.85/×1.54
+at Pod-1/Pod-2) is an outlier worth confirming on re-run before trusting
+this pod's total — everything else in the chain moves in the expected
+direction.
+
+| | Pod-1 | Pod-2 | Pod-3 |
+|---|---|---|---|
+| Locust users (peak, this run) | 24 | 40 | 64 |
+| RPS to serve 1 intake submission approved (`submit_task_decision`) | 4.069 | 6.966 | 5.752 |
+| T_real | 30s | 30s | 30s |
+| Real concurrent users | 122 | 209 | 173 |
+
+##### Volume-Tier: Stretch
+
+_(pending — no Stretch-tier run yet)_
+
+##### Volume-Tier: Stress
+
+_(pending — no Stress-tier run yet)_
+
+#### In-Cluster
+
+_(pending — no in-cluster run yet; see
+[`environment-topology.md`](../environment-topology.md) §5 for why
+in-cluster and end-to-end numbers must be measured and reported
+separately, and `test-scenarios.md`'s Prep step 7 for the in-cluster
+Locust deployment this needs)_
+
+These are still `1-isolated` runs, each scenario measured with the pod
+running only that workload — each figure is that scenario's ceiling in
+isolation, not additive. A pod serving the real mixed workload contends
+for the same DB connections, CPU, and AWE capacity across all five
+scenarios at once, so the real mixed-workload concurrent-user number is
+lower than each isolated figure.
+
 ### 5. Blended capacity, scaling, and data-volume sensitivity (Step 2)
 
-Pending — no Step 2 (blended) run exists yet; only Step 1 (isolated, §4)
-has run, on the smoke tier. Once a blended run exists: derive the scaling
-curve (Pod-Scale 1→2→3, fixed tier) and the volume-sensitivity chart
-(Volume-Tier swept, fixed pod-scale) from [`raw-report.md`](raw-report.md)'s
-`Step: 2-blended` sections and `synthesize_templates/blended-capacity.csv`
-— see [`test-scenarios.md`](test-scenarios.md) §3. §4's isolated data
-already points to AWE as the likely limiting factor for the blended
-workload's approval-submission share.
+Primary-tier raw data exists — Pod-Scale 1/2/3, `Step: 2-blended` (see
+[`raw-report.md`](raw-report.md)) — but it's a **fixed-concurrency** run
+(20/28/48 simulated users respectively), not a ramp-to-failure, so it
+gives a measured floor on each pod's blended capacity, not the confirmed
+SLO ceiling `test-scenarios.md` calls for:
+
+| Pod-Scale | Concurrent users | Requests | Failures | p95 | Aggregated RPS |
+|---|---|---|---|---|---|
+| Pod-1 | 20 | 29,216 | 2 | 420ms | 66.26 |
+| Pod-2 | 28 | 50,486 | 3 | 440ms | 93.39 |
+| Pod-3 | 48 | 62,520 | 2 | 290ms | 122.26 |
+
+Horizontal scaling efficiency from this floor: Pod-2 ≈70% of linear
+(93.39 ÷ (2×66.26)), Pod-3 ≈61% of linear (122.26 ÷ (3×66.26)) — both
+below the isolated-tier scaling seen in §4, consistent with AWE being a
+shared, fixed-capacity bottleneck under the blended mix (§4, §8).
+Synthesizing this into the curated `blended-capacity.csv` and a proper
+scaling/volume-sensitivity chart is still pending — see
+[`test-scenarios.md`](test-scenarios.md) §3.
 
 ### 6. Endurance / soak (Step 3)
 Pending — no soak run exists yet. Planned: 8h at 80% of this cell's Step 2
@@ -477,18 +603,21 @@ was also added on `g2p_registers.last_approved_at` in `c8efcac` (G2P-5513,
 `search_in_a_register`). None of this touches the `get_register_summary_data`
 count path — see item 5.
 
-**3. iam-core oidc_client/jwks ContextVar fix — not found in the repo.**
-Checked `iam_core/context.py`, `oidc_client.py`, and `jwks_helper.py` at
-current HEAD across all local branches, with no uncommitted or stashed
-changes: `jwks_cache` and `server_metadata_cache` are still plain
-`ContextVar`s, unchanged since the original `G2P-5128` consolidation
-commit — the same ContextVar-copy-per-asyncio-Task bug flagged earlier in
-this conversation. `fastapi_cache`
-is in active use elsewhere in `iam-core` (role-permission caching,
-`fe6d788`) and in `iam-staff-portal-api`, but not wired into these two
-files. Either this change hasn't been pushed to this checkout yet, or it
-landed in a different repo/branch — worth confirming before treating the
-~1000ms `get_subject_record` cost as fixed.
+**3. iam-core oidc_client/jwks ContextVar fix — applied.** `iam` commit
+`4c1888b` (G2P-5647, "Implement caching for JWKS and OIDC metadata")
+replaces both `jwks_cache` and `server_metadata_cache` — previously plain
+`ContextVar`s, the same copy-per-asyncio-Task bug flagged earlier in this
+conversation — with `fastapi_cache` `@cache` decorators on `get_jwks`
+(`jwks_helper.py`) and `get_server_metadata` (`oidc_client.py`), keyed by
+issuer/`jwks_uri` and login-provider id respectively, each with its own
+5-minute TTL (`auth_jwks_cache_ttl_seconds` / `auth_oidc_metadata_cache_ttl_seconds`).
+Backed by `FastAPICache.init(InMemoryBackend(), prefix="iam-cache")`
+(`iam_core/user_auth/cache.py`) — genuinely process-wide, unlike the
+`ContextVar` it replaces — and covered by tests
+(`test_helpers_and_middleware.py`, `test_oidc_and_adapters.py`). `iam` is
+now checked out on `performance-test` (the branch this fix lives on,
+matching `registry-platform` and this repo), confirming the ~1000ms
+`get_subject_record` cost reported earlier is fixed at the code level.
 
 **4. Connection pooling via singleton session-maker — applied.**
 `openg2p-fastapi-common` commit `17057b7` (G2P-5620) replaced the
@@ -532,12 +661,12 @@ applied, mixed effect.** In commit order:
   - `2ef461b`: validation-method refactors in the same services, no new
     caching primitives.
 
-**6. Async AWE-request creation for `create_cr`/`finalize_intake` — pending,
-confirmed.** Both still call AWE synchronously to create the workflow. A
-Celery worker/beat setup already exists in this codebase
-(`celery/openg2p-registry-celery-beat`) for the data-ingest pipeline, but
-nothing yet routes AWE request creation through a queue table or a
-Celery task.
+**6. Async AWE-request creation for `create_cr`/`finalize_intake` —
+identified as a candidate, not yet applied.** Both still call AWE
+synchronously to create the workflow. A Celery worker/beat setup already
+exists in this codebase (`celery/openg2p-registry-celery-beat`) for the
+data-ingest pipeline, but nothing yet routes AWE request creation through
+a queue table or a Celery task.
 
 **7. Second AWE call in `list_tasks_for_request` — not found in the repo.**
 `awe_helper.py`'s `list_tasks_for_request` still makes two sequential
@@ -551,6 +680,21 @@ cited as resolved.
 `DB_POOL_SIZE`/`DB_POOL_MAX_OVERFLOW`/`DB_POOL_RECYCLE` env vars, added in
 `155463b` and adjusted in `072e943` (both `awe`) — see item 1 for the
 actual deployed numbers.
+
+**9. PgBouncer added for connection pooling — applied, infra-level, not
+yet load-tested.**
+[`postgres-settings/pgbouncer-config.txt`](../../postgres-settings/pgbouncer-config.txt)
+(added `0520f97`, alongside the Primary-tier seed) configures a PgBouncer
+instance in front of the host PostgreSQL — `pool_mode = transaction`,
+`listen_port = 6432`, `default_pool_size = 50`, `min_pool_size = 10`,
+`reserve_pool_size = 10` (`reserve_pool_timeout = 5s`),
+`max_client_conn = 200`; see §3 for the full settings table. This is an
+infra-level change — no application code references PgBouncer directly,
+app pods connect to `:6432` instead of Postgres' own port — addressing
+[`environment-topology.md`](../environment-topology.md)'s note that
+connection pooling in front of the host Postgres is "usually the real
+ceiling" on this topology. Whether it actually raises that ceiling isn't
+validated yet: that's exactly what `db-sweep` (§7, still pending) is for.
 
 **Also confirmed while auditing the above (not in the original list):**
 `155463b` added several more indexes on AWE's own tables
@@ -566,26 +710,34 @@ approver rules and for the sibling `auth_models` package respectively, but
 a no-op on the current `rule_type='user'` seed data.
 
 ### 9. Pass / fail vs SLO/NFR
-Pending overall PASS/FAIL — no primary-tier SLO run exists yet. The one
-completed check, the smoke-tier pipeline dry run, surfaced a failing
-endpoint that is a known upstream bug rather than a capacity finding:
-`register_read`'s `get_record_history` failed 33/33 (`SYS-ERR-001`, §2).
+Pending overall PASS/FAIL — no ramp-to-failure SLO run exists yet (§4 has
+Smoke and Primary isolated data, and §5 a fixed-concurrency Primary
+blended floor; neither is a ramp). No failing endpoints in either tier's
+data — `register_read`'s `get_record_history` (§2's upstream
+`SYS-ERR-001` bug) was dropped from the task code after the Smoke dry run
+and doesn't appear in any run since.
 
 ### 10. Recommendations & sizing guide
-- **Production sizing:** not yet computable — requires primary-tier
-  blended-capacity data (§5).
-- **Config recommendations:** confirm items 3 and 7 from §8 actually
-  landed (they don't appear in this checkout's history) before treating
-  them as done; the remaining open items from §8 — moving AWE-request
-  creation onto Celery (item 6), and the `get_register_summary_data`
-  approximate-count fix (item 5) — are still open.
+- **Production sizing:** partially computable. Primary-tier blended data
+  exists (§5): Pod-Scale 1 sustains **≥66.3 RPS** blended over `primary`
+  at p95 ≈420ms with near-zero failures — but at a **fixed 20-user load**,
+  not a ramp-to-failure, so this is a measured floor on `R`, not the
+  SLO-confirmed ceiling `test-scenarios.md` defines. A fully validated
+  sizing figure still needs (a) a ramp-to-failure blended run per
+  Volume-Tier/Pod-Scale cell, and (b) the DB ceiling `D` from `db-sweep`
+  (§7, not yet run) to bound total pods against.
+- **Config recommendations:** item 3 (JWKS/OIDC cache fix) is confirmed
+  active now that `iam` is checked out on `performance-test`; confirm
+  item 7 actually landed (it doesn't appear in any `awe` branch checked)
+  before treating it as done; the remaining open items from §8 — moving
+  AWE-request creation onto Celery (item 6), the
+  `get_register_summary_data` approximate-count fix (item 5), and
+  validating PgBouncer's effect under load (item 9, `db-sweep`) — are
+  still open.
 - **Follow-ups / known limits:** async-pipeline throughput for the
   AWE-request-creation queue (item 6 above) is separate from the existing
   ingest-pipeline Celery deployment and not covered by this round's
-  scenarios ([`test-scenarios.md`](test-scenarios.md) §1/§2);
-  `register_read`'s `get_record_history` upstream bug (§2) needs
-  resolution before primary-tier runs; §3's pod-spec mismatch needs
-  reconciling before primary-tier numbers are cited.
+  scenarios ([`test-scenarios.md`](test-scenarios.md) §1/§2).
 
 ### 11. Appendix
 - Raw Locust CSVs, Grafana dashboard exports, `pg_stat_statements` dumps.

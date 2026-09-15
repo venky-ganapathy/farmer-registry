@@ -81,6 +81,55 @@ These topology facts change the original thought-process in concrete ways:
   and run during a quiet window (shared compute node). Record everything that
   else is running on the node at test time.
 
+## Pod configuration
+
+The actual specs the Smoke and Primary tier runs (`staff-api/test-scenarios.md`
+§3/§7) ran against — the single source of truth for pod sizing; other docs in
+this directory should link here rather than repeat these numbers:
+
+| Service | Pod spec |
+|---|---|
+| farmer-registry (`staff-portal-api`) | 2 vCPU / 2 GB RAM |
+| AWE | 2 vCPU / 2 GB RAM |
+| Keycloak | 1 vCPU / 1 GB RAM |
+| Master Data Service | to be configured |
+| Audit Manager | to be configured |
+| ID Generator | to be configured |
+
+AWE and Keycloak are fixed-count pods on the shared compute node regardless
+of `staff-portal-api`'s Pod-Scale — the specs above are the ceiling each
+independently operates under while `staff-portal-api` scales 1→2→3.
+`requests == limits`, HPA off (per the Test rig section above); gunicorn/
+uvicorn worker count is tuned separately per §"Environment pinning
+checklist" below (the API Dockerfiles default to `NO_OF_WORKERS=8`, sized
+for a much larger pod than 2 vCPU).
+
+## PostgreSQL & PgBouncer configuration
+
+From [`postgres-settings/pg-settings.txt`](../postgres-settings/pg-settings.txt)
+and [`postgres-settings/pgbouncer-config.txt`](../postgres-settings/pgbouncer-config.txt)
+— the storage node (`t3a.2xlarge`, 8 vCPU / 32 GB, ~31 GB usable) is tuned as:
+
+| PostgreSQL parameter | Value | Rationale |
+|---|---|---|
+| `shared_buffers` | 8 GB | ~25% of RAM |
+| `work_mem` | 16 MB | per query operation |
+| `maintenance_work_mem` | 2 GB | ~6.5% of RAM |
+| `effective_cache_size` | 15.5 GB | ~50% of RAM |
+
+| PgBouncer parameter | Value |
+|---|---|
+| `listen_port` | 6432 |
+| `pool_mode` | transaction |
+| `max_client_conn` | 200 |
+| `default_pool_size` | 50 |
+| `min_pool_size` | 10 |
+| `reserve_pool_size` | 10 |
+| `reserve_pool_timeout` | 5s |
+
+`max_connections` isn't set in either checked-in config file — still needs
+recording per run.
+
 ## Environment pinning checklist (record in every result set)
 
 - Chart version + image tags (registry images, `appVersion`), git SHA.
@@ -89,10 +138,11 @@ These topology facts change the original thought-process in concrete ways:
   each DCI search includes a PM key fetch + CM `/validate` hop, so results are not
   comparable with a gates-off run. See [`test-scenarios.md`](staff-api/test-scenarios.md) §8 "Prep".
 - Node instance types + whether T3 Unlimited was enabled on storage.
-- Pod resource requests/limits and **gunicorn/uvicorn worker count**
-  (the API Dockerfiles default to `NO_OF_WORKERS=8` — see
-  [`test-scenarios.md`](staff-api/test-scenarios.md); this must be tuned for a 1-vCPU pod
+- Pod resource requests/limits and **gunicorn/uvicorn worker count** (the API
+  Dockerfiles default to `NO_OF_WORKERS=8` — see "Pod configuration" above;
+  this must be tuned for the actual 2-vCPU pod, not the Dockerfile default,
   and recorded).
-- PostgreSQL version + the postgresql.conf values changed + PgBouncer settings.
+- PostgreSQL version + any postgresql.conf/PgBouncer values changed from
+  "PostgreSQL & PgBouncer configuration" above.
 - Data volume (row counts per register + history + supporting tables).
 - Locust version, run location (in-cluster vs external), and config.
