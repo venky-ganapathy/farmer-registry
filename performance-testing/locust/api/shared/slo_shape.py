@@ -209,6 +209,17 @@ class SLOStepRampShape(LoadTestShape):
     pod_grep = os.environ.get("STAFF_API_POD_GREP", "farmer-registry-staff-portal-api")
     cpu_poll_seconds = 10
 
+    @staticmethod
+    def _cpu_over_need(replica_count: int) -> int:
+        """How many staff-api pods must be at CPU_BREACH_CORES to freeze.
+
+        3+ (POD_SCALE or observed replicas) → 2. Otherwise → 1.
+        """
+        raw = os.environ.get("POD_SCALE", "").strip()
+        scale = int(raw) if raw.isdigit() else 0
+        n = scale if scale > 0 else replica_count
+        return 2 if n >= 3 else 1
+
     def __init__(self):
         super().__init__()
         self._step = -1
@@ -339,7 +350,10 @@ class SLOStepRampShape(LoadTestShape):
         over = sum(
             1 for pod in pods if float(pod["cores"]) >= self.cpu_breach_cores
         )
-        need = 2 if len(pods) >= 3 else 1
+        # POD_SCALE=3 (or 3+ pods in top): two replicas must be >= 1.85.
+        # 1 or 2: one replica is enough. Prefer POD_SCALE so a 3-pod run
+        # never freezes on a single hot pod if top briefly lists fewer.
+        need = self._cpu_over_need(len(pods))
         self._last_cpu_cores = total
         self._last_hot_cores = hottest
         self._last_cpu_over = over

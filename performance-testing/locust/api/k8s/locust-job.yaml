@@ -1,0 +1,120 @@
+# Isolated / blended in-cluster Job. One YAML; edit TEST and POD_SCALE only.
+#
+# Same locustfiles and env.sh SLOs as laptop e2e. Do not set IN_CLUSTER_SOAK
+# (that is soak-job.yaml: RPS cap and pod pin).
+#
+# Scale farmer-registry-staff-portal-api to POD_SCALE first.
+# Rebuild the image whenever perf-seed changes (after cr-create / intake-create
+# re-export search terms locally, then run the matching read-and-approve).
+#
+#   cd performance-testing/locust/api
+#   docker build -f k8s/Dockerfile \
+#     --build-context locust=. \
+#     --build-context seed="$HOME/Desktop/openg2p/perf-seed" \
+#     -t vin0dkhichar/locust-staff-soak:latest \
+#     k8s
+#   docker push vin0dkhichar/locust-staff-soak:latest
+#   kubectl -n perftest delete job locust-staff --ignore-not-found
+#   kubectl -n perftest apply -f k8s/locust-job.yaml
+# After Locust the container sleeps (pod stays Running) so kubectl cp works.
+# Wait for LOCUST_FINISHED in logs, then cp; delete the Job when starting
+# the next case.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: locust-staff
+  namespace: perftest
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: locust-staff-metrics
+  namespace: perftest
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: locust-staff-metrics
+  namespace: perftest
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: locust-staff-metrics
+subjects:
+  - kind: ServiceAccount
+    name: locust-staff
+    namespace: perftest
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: locust-staff
+  namespace: perftest
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 86400
+  template:
+    spec:
+      serviceAccountName: locust-staff
+      restartPolicy: Never
+      containers:
+        - name: locust
+          image: vin0dkhichar/locust-staff-soak:latest
+          imagePullPolicy: Always
+          workingDir: /app
+          command: ["/app/in-cluster-run.sh"]
+          env:
+            # register-read | cr-create | cr-read-and-approve |
+            # intake-create | intake-read-and-approve | blended
+            - name: TEST
+              value: blended
+            - name: POD_SCALE
+              value: "3"
+            - name: INGRESS
+              value: in-cluster
+            - name: VOLUME_TIER
+              value: primary
+            - name: STAFF_API_BASE
+              value: http://farmer-registry-staff-portal-api.perftest.svc.cluster.local
+            - name: KEYCLOAK_BASE
+              value: http://commons-keycloak.perftest.svc.cluster.local
+            - name: KEYCLOAK_REALM
+              value: staff
+            - name: OIDC_CLIENT_ID
+              value: farmer-registry-staff-portal
+            - name: PERF_SEED_DIR
+              value: /perf-seed
+            # Same freeze as env.sh / laptop e2e. Shape polls kubectl top
+            # in this namespace (Role locust-staff-metrics).
+            # POD_SCALE 1 or 2: one pod >= 1.85. POD_SCALE 3: two pods >= 1.85.
+            - name: CPU_BREACH_CORES
+              value: "1.85"
+            - name: CPU_BREACH_POLLS
+              value: "1"
+            - name: STAFF_API_KUBE_NAMESPACE
+              value: perftest
+            - name: STAFF_API_POD_GREP
+              value: farmer-registry-staff-portal-api
+          envFrom:
+            - secretRef:
+                name: locust-staff-soak
+          volumeMounts:
+            - name: results
+              mountPath: /results
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: results
+          emptyDir: {}

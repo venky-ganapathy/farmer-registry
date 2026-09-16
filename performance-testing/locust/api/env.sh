@@ -27,9 +27,9 @@ export VOLUME_TIER=primary
 # export VOLUME_TIER=stress
 
 # Pod-Scale -- app replica count under test. Uncomment exactly one.
-export POD_SCALE=1
+# export POD_SCALE=1
 # export POD_SCALE=2
-# export POD_SCALE=3
+export POD_SCALE=3
 
 # Step -- see documentation/staff-api/test-scenarios.md §3/§7. Uncomment exactly one.
 # export STEP=1-isolated
@@ -105,6 +105,11 @@ export CPU_BREACH_POLLS=2
 # Freeze user count when enough replicas hit this many cores:
 # 3+ pods → 2 over limit; 1 or 2 pods → 1 over limit.
 export CPU_BREACH_CORES=1.85
+# Step 3 soak user count is documented here for the in-cluster Job only.
+# Do not export SOAK_MAX_RPS / STAFF_API_HEADLESS / IN_CLUSTER_SOAK here —
+# those exist only in k8s/soak-job.yaml so Step 1/2 laptop runs stay uncapped.
+export SOAK_USERS=36
+export SOAK_RUN_TIME=8h
 export STAFF_API_KUBE_NAMESPACE=perftest
 export STAFF_API_POD_GREP=farmer-registry-staff-portal-api
 

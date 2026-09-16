@@ -36,6 +36,10 @@ set +u
 source ./env.sh
 set -u
 
+# In-cluster soak Job knobs (RPS cap, headless pod pin, Connection: close).
+# Never leak them into laptop isolated/blended from a previous export.
+unset IN_CLUSTER_SOAK SOAK_MAX_RPS STAFF_API_HEADLESS DISABLE_HTTP_KEEPALIVE
+
 # Farmer CPU polls `kubectl top` in this process. Always the perftest
 # kubeconfig (Rancher download), not ~/.kube/openg2p.yaml.
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/perftest.yaml}"
@@ -102,7 +106,7 @@ case "$STEP_NAME" in
     CSV_PREFIX="results/staff-api/${INGRESS}/${VOLUME_TIER}/pod-${POD_SCALE}/${STEP}/blended"
     ;;
   soak)
-    LOCUSTFILE="staff-api/blended/blended_locustfile.py"
+    LOCUSTFILE="staff-api/blended/soak_locustfile.py"
     CSV_PREFIX="results/staff-api/${INGRESS}/${VOLUME_TIER}/pod-${POD_SCALE}/${STEP}/soak"
     ;;
   db-sweep)
@@ -120,6 +124,15 @@ esac
 
 mkdir -p "$(dirname "$CSV_PREFIX")"
 
-echo "locust -f ${LOCUSTFILE} --csv ${CSV_PREFIX}"
-
-locust -f "$LOCUSTFILE" --host "$STAFF_API_BASE" -u 1 -r 1 --csv "$CSV_PREFIX"
+if [ "$STEP_NAME" = soak ]; then
+  SOAK_USERS="${SOAK_USERS:?set SOAK_USERS in env.sh to 80% of Step 2 freeze users}"
+  SOAK_RUN_TIME="${SOAK_RUN_TIME:-8h}"
+  echo "8h soak from this laptop will die if the machine sleeps."
+  echo "Prefer the in-cluster Job: locust/api/k8s/soak-job.yaml"
+  echo "locust -f ${LOCUSTFILE} --headless -u ${SOAK_USERS} -r ${SOAK_USERS} -t ${SOAK_RUN_TIME} --csv ${CSV_PREFIX}"
+  locust -f "$LOCUSTFILE" --host "$STAFF_API_BASE" --headless \
+    -u "$SOAK_USERS" -r "$SOAK_USERS" -t "$SOAK_RUN_TIME" --csv "$CSV_PREFIX"
+else
+  echo "locust -f ${LOCUSTFILE} --csv ${CSV_PREFIX}"
+  locust -f "$LOCUSTFILE" --host "$STAFF_API_BASE" -u 1 -r 1 --csv "$CSV_PREFIX"
+fi

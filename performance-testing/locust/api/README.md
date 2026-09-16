@@ -71,12 +71,9 @@ passes `--headless`/`--autostart`, so it opens the web UI at
 swarming" — `-t` is deliberately omitted since Locust ignores `--run-time`
 without one of those two flags.
 
-`STEP=2-blended`/`3-soak` currently fall back to the compatibility-shim
-`locustfile.py` (prints a warning) since the combined blended-mix locustfile
-doesn't exist yet. `STEP=4-db-sweep` isn't Locust-fired at all — the script
-exits with an explanatory message (see
-[`../../documentation/staff-api/test-scenarios.md`](../../documentation/staff-api/test-scenarios.md)
-§3 "`db-sweep`").
+`STEP=2-blended` uses `staff-api/blended/blended_locustfile.py` (SLO ramp).
+`STEP=3-soak` uses `soak_locustfile.py` (fixed users, headless; prefer the
+in-cluster Job below). `STEP=4-db-sweep` isn't Locust-fired.
 
 For an ad-hoc one-off outside the `env.sh` knobs, invoke `locust` directly:
 
@@ -86,12 +83,70 @@ locust -f staff-api/register_read/register_read_locustfile.py \
   --csv results/staff-api/in-cluster/primary/pod-1/1-isolated/register_read/register_read
 ```
 
-## Running in-cluster
+## Running in-cluster (8h soak)
 
-Build a tiny image (python + locust + this directory) and run it as a
-Job/Deployment in the namespace so the generator hits the service ClusterIP
-directly (isolates the microservice from the RP/ingress). Mount the seed
-manifest via ConfigMap.
+Do **not** leave Locust on the laptop for 8 hours. Run a Kubernetes Job in
+`perftest` against the staff-api ClusterIP. Use
+`staff-api/blended/soak_locustfile.py` (no ramp shape) at **80% of the Step 2
+freeze user count**, `--headless --run-time 8h`.
+
+1. Confirm the service name:
+
+   `kubectl -n perftest get svc | grep staff-portal-api`
+
+2. Set `SOAK_USERS` to `floor(0.8 * step2_users)` (example: freeze at 40 → 32).
+   Label the run `INGRESS=in-cluster`. Point `STAFF_API_BASE` at ClusterIP
+   (not the public hostname), e.g.
+   `http://farmer-registry-staff-portal-api.perftest.svc.cluster.local`.
+   Point `KEYCLOAK_BASE` at the in-cluster Keycloak service
+   (`http://commons-keycloak.perftest.svc.cluster.local`). Locust shares one
+   OIDC token for the whole process so Keycloak is not stampeded.
+
+3. Build and push an image from this directory (cluster must be able to pull it):
+
+```bash
+cd performance-testing/locust/api
+docker build -f k8s/Dockerfile -t YOUR_REGISTRY/locust-staff-soak:latest .
+docker push YOUR_REGISTRY/locust-staff-soak:latest
+```
+
+4. Seed files + OIDC secret (do not put passwords in the Job YAML):
+
+```bash
+kubectl -n perftest create configmap locust-perf-seed \
+  --from-file="$HOME/Desktop/openg2p/perf-seed" --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n perftest create secret generic locust-staff-soak \
+  --from-literal=OIDC_CLIENT_SECRET='...' \
+  --from-literal=OIDC_USERNAME='nina.patel' \
+  --from-literal=OIDC_PASSWORD='...' \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+5. Edit `k8s/soak-job.yaml`: image, `SOAK_USERS`, ClusterIP if the service
+   name differs. Apply and detach:
+
+```bash
+kubectl -n perftest apply -f k8s/soak-job.yaml
+kubectl -n perftest logs -f job/locust-staff-soak
+```
+
+You can close the laptop. Locust still writes CSVs while it runs, but
+**do not wait for the Job to Complete** — a finished container cannot be
+`kubectl cp`'d and `emptyDir` dies with the pod. The Job sleeps after 8h
+and stays Running until you collect:
+
+```bash
+kubectl -n perftest logs job/locust-staff-soak | grep SOAK_FINISHED
+POD=$(kubectl -n perftest get pod -l job-name=locust-staff-soak -o jsonpath='{.items[0].metadata.name}')
+mkdir -p ./results/staff-api/in-cluster
+kubectl -n perftest cp "$POD:/results/staff-api/in-cluster/." ./results/staff-api/in-cluster/
+kubectl -n perftest delete job locust-staff-soak
+```
+
+Do not schedule this Job on the same node as `farmer-registry-staff-portal-api`
+if you can avoid it. Report this soak as **in-cluster**; do not mix with
+Step 2 end-to-end RPS.
 
 ## Notes
 

@@ -1,0 +1,7 @@
+results
+k8s
+perf-seed
+__pycache__
+*.pyc
+.venv
+*.csv

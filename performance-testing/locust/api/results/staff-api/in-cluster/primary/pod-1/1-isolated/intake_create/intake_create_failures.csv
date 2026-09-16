@@ -1,0 +1,2 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+POST,finalize_intake_form_submission,CatchResponseError('AWE-ERR-006: AWE_REQUEST_FAILED: upstream connect error or disconnect/reset before headers. reset reason: connection termination (url=https://awe.perftest.openg2p.org/v1/awe/requests)'),1,2026-09-15T08:13:59Z,2026-09-15T08:13:59Z
